@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from exoplanet_hunter import lc_utils
+
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
@@ -24,7 +26,7 @@ def main() -> int:
     args = p.parse_args()
 
     search = json.loads(
-        (args.search_json or Path(f"results/search/{args.tic}_bls.json")).read_text()
+        (args.search_json or lc_utils.default_search_json(args.tic)).read_text()
     )
     vet_path = args.vet_json or Path(f"results/vetting/{args.tic}_vet.json")
     vet = json.loads(vet_path.read_text()) if vet_path.exists() else {}
@@ -33,6 +35,10 @@ def main() -> int:
     zenodo = str(pred_path) if pred_path.exists() else ""
 
     ephem = vet.get("ephemeris", search)
+    checks = vet.get("checks", {})
+    centroid = checks.get("centroid", {})
+    fpp = checks.get("fpp", {})
+    ranking = vet.get("ranking", {})
     fields = {
         "tic_id": args.tic,
         "discovery_data_source": "TESS",
@@ -45,9 +51,19 @@ def main() -> int:
         "epoch_uncertainty_btjd": "see search / fit",
         "vetting_summary": vet.get("overall_pass"),
         "failed_vetting_checks": vet.get("failed_checks", []),
+        "skipped_vetting_checks": vet.get("skipped_checks", []),
+        "search_method": search.get("method", "bls"),
+        "search_snr": search.get("snr"),
+        "search_sde": search.get("sde"),
+        "centroid_offset_arcsec": centroid.get("offset_arcsec"),
+        "centroid_offset_sigma": centroid.get("offset_sigma"),
+        "triceratops_fpp": fpp.get("fpp"),
+        "triceratops_nfpp": fpp.get("nfpp"),
+        "ranking_score": ranking.get("score"),
         "supporting_plots": [
             f"results/search/{args.tic}_folded.png",
             f"results/vetting/{args.tic}_vet.md",
+            *([centroid["diff_image_png"]] if centroid.get("diff_image_png") else []),
         ],
         "preregistered_predictions": zenodo,
         "exofop_target_url": f"https://exofop.ipac.caltech.edu/tess/target.php?id={args.tic}",
@@ -74,6 +90,18 @@ def main() -> int:
         f"- **Transit epoch (BTJD)**: {fields['transit_epoch_btjd']}",
         f"- **Depth (ppm)**: {fields['transit_depth_ppm']:.1f}",
         f"- **Duration (h)**: {fields['transit_duration_hours']:.3f}",
+        "",
+        "## Vetting evidence (paste into ExoFOP notes)",
+        f"- Search: {fields['search_method'].upper()}, SNR {fields['search_snr']}, SDE {fields['search_sde']}",
+        f"- Vetting overall pass: {fields['vetting_summary']}; failed: {fields['failed_vetting_checks'] or 'none'}; "
+        f"skipped: {fields['skipped_vetting_checks'] or 'none'}",
+        "- Difference-image centroid offset: "
+        + (f"{fields['centroid_offset_arcsec']:.1f}\" ({fields['centroid_offset_sigma']:.1f} sigma)"
+           if fields["centroid_offset_arcsec"] is not None else "not run"),
+        "- TRICERATOPS FPP / NFPP: "
+        + (f"{fields['triceratops_fpp']:.4f} / {fields['triceratops_nfpp']:.4g}"
+           if fields["triceratops_fpp"] is not None else "not run"),
+        f"- Ranking score (heuristic): {fields['ranking_score']}",
         "",
         "## Notes",
         fields["submission_notes"],

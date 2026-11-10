@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from exoplanet_hunter import lc_utils
+from exoplanet_hunter.scoring import candidate_score
 
 
 def catalog_crossmatch(tic: int) -> dict:
@@ -155,7 +157,63 @@ def t14_consistency(duration_d: float, period_d: float, rho_sun: float = 1.0) ->
     }
 
 
-def build_report(tic: int, search: dict, lc_path: Path, rho: float) -> dict:
+def exovetter_checks(lc: dict, period: float, epoch: float, duration_d: float, depth_frac: float) -> dict:
+    """Independent flux-level vetters from exovetter (ModShift, SWEET, LEO transit events)."""
+    try:
+        import astropy.units as u
+        import lightkurve as lk
+        from astropy.time import Time
+        from exovetter import const as exo_const
+        from exovetter import vetters
+        from exovetter.tce import Tce
+    except ImportError:
+        return {"reason": "exovetter not installed (pip install exovetter)"}
+    try:
+        tce = Tce(period=period * u.day, epoch=epoch * u.day, epoch_offset=exo_const.btjd,
+                  duration=duration_d * u.day, depth=max(depth_frac, 1e-6) * exo_const.frac_amp)
+        lcobj = lk.LightCurve(time=Time(lc["time"], format="btjd"), flux=lc["flux"], flux_err=lc["flux_err"])
+        out: dict = {}
+        ms = vetters.ModShift(lc_name="flux").run(tce, lcobj)
+        out["modshift"] = {k: float(v) for k, v in ms.items() if np.isscalar(v)}
+        try:
+            sw = vetters.Sweet().run(tce, lcobj)
+            out["sweet_msg"] = str(sw.get("msg", ""))
+        except Exception as exc:  # pragma: no cover
+            out["sweet_error"] = str(exc)
+        m = out["modshift"]
+        # Robovetter MS2-style cut (Coughlin et al. 2016): the primary event must beat
+        # the secondary by more than the false-alarm threshold (red-noise scaled).
+        # Magnitudes are used because exovetter's sign convention for dips varies.
+        fa = m.get("false_alarm_threshold", np.inf)
+        fred = abs(m.get("Fred", 1.0) or 1.0)
+        ms2 = (abs(m.get("sigma_pri", 0.0)) - abs(m.get("sigma_sec", 0.0))) / fred - fa
+        out["ms2"] = float(ms2)
+        sweet_ok = not out.get("sweet_msg", "").upper().startswith("WARN")
+        out["pass"] = bool(ms2 > 0 and sweet_ok)
+        return out
+    except Exception as exc:
+        return {"reason": f"exovetter failed: {exc}"}
+
+
+def load_or_run(kind: str, tic: int, search_path: Path, run: bool, extra: list[str]) -> dict:
+    """Load results/<kind>/<tic>_<kind>.json, optionally running the script first."""
+    script = {"centroid": "centroid_check.py", "fpp": "fpp_triceratops.py"}[kind]
+    path = Path(f"results/{kind}/{tic}_{kind}.json")
+    if run:
+        subprocess.run([sys.executable, str(ROOT / "scripts" / script), str(tic),
+                        "--search-json", str(search_path), *extra], check=False)
+    if not path.exists():
+        return {"reason": f"not run (use --run-{kind} or scripts/{script})"}
+    data = json.loads(path.read_text())
+    if data.get("skipped"):
+        return {"reason": data.get("reason", "skipped")}
+    keep = ("pass", "offset_px", "offset_arcsec", "offset_sigma", "contaminant_candidates",
+            "fpp", "fpp_std", "nfpp", "validated_level", "top_scenarios", "diff_image_png")
+    return {k: data[k] for k in keep if k in data}
+
+
+def build_report(tic: int, search: dict, lc_path: Path, rho: float, search_path: Path | None = None,
+                 run_centroid: bool = False, run_fpp: bool = False, use_exovetter: bool = True) -> dict:
     lc = lc_utils.load_npz(lc_path)
     lc, _ = lc_utils.reject_bad_sectors(lc)
     cleaned = lc_utils.bin_lc(lc_utils.clean_lc(lc))
@@ -174,14 +232,20 @@ def build_report(tic: int, search: dict, lc_path: Path, rho: float) -> dict:
         ),
         "t14_consistency": t14_consistency(dur, period, rho),
     }
+    if use_exovetter:
+        checks["exovetter"] = exovetter_checks(cleaned, period, epoch, dur, search["depth_frac"])
+    sp = search_path or lc_utils.default_search_json(tic)
+    checks["centroid"] = load_or_run("centroid", tic, sp, run_centroid, [])
+    checks["fpp"] = load_or_run("fpp", tic, sp, run_fpp, [])
+    advisory = {"exovetter"}  # feeds the ranking score but does not fail a candidate on its own
     failures = [
         name
         for name, c in checks.items()
-        if not c.get("pass", True) and "reason" not in c
+        if not c.get("pass", True) and "reason" not in c and name not in advisory
     ]
     soft_skip = [name for name, c in checks.items() if "reason" in c]
     overall = len(failures) == 0 and not checks["catalog"]["toi"]
-    return {
+    report = {
         "tic": tic,
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "ephemeris": {
@@ -189,12 +253,17 @@ def build_report(tic: int, search: dict, lc_path: Path, rho: float) -> dict:
             "epoch_btjd": epoch,
             "duration_d": dur,
             "depth_ppm": search["depth_ppm"],
+            "snr": search.get("snr"),
+            "sde": search.get("sde"),
+            "search_method": search.get("method", "bls"),
         },
         "checks": checks,
         "failed_checks": failures,
         "skipped_checks": soft_skip,
         "overall_pass": overall,
     }
+    report["ranking"] = candidate_score(report)
+    return report
 
 
 def markdown_report(report: dict) -> str:
@@ -211,13 +280,20 @@ def markdown_report(report: dict) -> str:
         "",
         f"## Overall: **{'PASS' if report['overall_pass'] else 'FAIL'}**",
         "",
+        f"Ranking score: **{report['ranking']['score']:.3f}** ({report['ranking']['tier']}) "
+        "- heuristic ordering score, not a false-positive probability.",
+        "",
     ]
     for name, check in report["checks"].items():
-        status = "pass" if check.get("pass") else ("skip" if "reason" in check else "fail")
+        status = "info" if "pass" not in check and "reason" not in check else (
+            "pass" if check.get("pass") else ("skip" if "reason" in check else "fail"))
         lines.append(f"### {name} ({status})")
         for k, v in check.items():
-            if k != "pass":
-                lines.append(f"- {k}: {v}")
+            if k == "pass":
+                continue
+            if isinstance(v, list) and len(v) > 5:
+                v = v[:5] + [f"... ({len(v) - 5} more in JSON)"]
+            lines.append(f"- {k}: {v}")
         lines.append("")
     if report["failed_checks"]:
         lines.append(f"Failed: {', '.join(report['failed_checks'])}")
@@ -230,14 +306,19 @@ def main() -> int:
     p.add_argument("--search-json", type=Path, default=None)
     p.add_argument("--lc", type=Path, default=None)
     p.add_argument("--rho", type=float, default=1.0)
+    p.add_argument("--run-centroid", action="store_true", help="Run scripts/centroid_check.py first (downloads TESScut)")
+    p.add_argument("--run-fpp", action="store_true", help="Run scripts/fpp_triceratops.py first (optional dependency)")
+    p.add_argument("--no-exovetter", action="store_true", help="Skip the exovetter ModShift/SWEET vetters")
     p.add_argument("-o", type=Path, default=Path("results/vetting"))
     args = p.parse_args()
 
-    search_path = args.search_json or Path(f"results/search/{args.tic}_bls.json")
+    search_path = args.search_json or lc_utils.default_search_json(args.tic)
     search = json.loads(search_path.read_text())
     lc_path = args.lc or Path(f"data/lightcurves/{args.tic}.npz")
 
-    report = build_report(args.tic, search, lc_path, args.rho)
+    report = build_report(args.tic, search, lc_path, args.rho, search_path=search_path,
+                          run_centroid=args.run_centroid, run_fpp=args.run_fpp,
+                          use_exovetter=not args.no_exovetter)
     args.o.mkdir(parents=True, exist_ok=True)
     json_out = args.o / f"{args.tic}_vet.json"
     md_out = args.o / f"{args.tic}_vet.md"
