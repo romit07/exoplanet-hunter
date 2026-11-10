@@ -6,6 +6,6 @@ __pycache__/
 data/mast_cache/
 data/lightcurves/
 results/
-agent-tools/
 *.fits
 .DS_Store
+*_gaia_background.csv
