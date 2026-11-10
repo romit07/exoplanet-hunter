@@ -20,7 +20,7 @@ python3 scripts/vet_candidate.py 370612437
 python3 tests/smoke_test.py
 ```
 
-Structured end-to-end steps live in **[SKILL.md](SKILL.md)**. NASA submission details: **[docs/SUBMITTING_TO_NASA.md](docs/SUBMITTING_TO_NASA.md)**. Walkthrough notebook: **[notebooks/exoplanet_search.ipynb](notebooks/exoplanet_search.ipynb)**.
+Structured end-to-end steps live in **[SKILL.md](SKILL.md)**. NASA submission details: **[docs/SUBMITTING_TO_NASA.md](docs/SUBMITTING_TO_NASA.md)**. Naming (catalog IDs vs official IAU names): **[docs/NAMING.md](docs/NAMING.md)**. Packaged candidates: **[candidates/](candidates/)**. Walkthrough notebook: **[notebooks/exoplanet_search.ipynb](notebooks/exoplanet_search.ipynb)**.
 
 ## What’s in the repo
 
@@ -32,6 +32,8 @@ Structured end-to-end steps live in **[SKILL.md](SKILL.md)**. NASA submission de
 | `scripts/vet_candidate.py` | Odd/even, secondary, holdout, injection, catalog checks → JSON + Markdown |
 | `scripts/predict_transits.py` | Future midtransit table for Zenodo preregistration |
 | `scripts/make_ctoi_report.py` | ExoFOP parameter summary |
+| `scripts/publish_candidate.py` | Package a vetted hit into `candidates/TIC<id>/` and update the index |
+| `candidates/` | Public candidate folders plus [INDEX.md](candidates/INDEX.md) |
 | `exoplanet_hunter/lc_utils.py` | Shared light-curve I/O, cleaning, BLS |
 | `tests/smoke_test.py` | Period recovery on TOI-700 b and TIC 370612437 |
 
@@ -45,7 +47,7 @@ The pipeline mirrors community practice for **FFI-only** nearby stars:
 2. Download independent reductions (**TESS-SPOC** and **QLP** where available).
 3. Biweight detrend per sector, bin to 10 minutes, **Box Least Squares** search (0.5–25 d) with harmonic alias checks.
 4. Vetting: catalog crossmatch, odd/even and secondary eclipse tests, SPOC/QLP agreement, inverted light-curve control, leave-one-sector holdout, simple injection–recovery, transit-duration sanity check.
-5. Preregister ephemeris on Zenodo before upcoming sectors; upload parameters and plots to ExoFOP as a CTOI.
+5. Preregister ephemeris on Zenodo before upcoming sectors; package a passing candidate with `publish_candidate.py`; after a refereed write-up, upload parameters and plots to ExoFOP as a community candidate / CTOI (see [docs/SUBMITTING_TO_NASA.md](docs/SUBMITTING_TO_NASA.md) for the current publication-first policy).
 
 Advanced steps (pixel centroids, TRICERATOPS, full MCMC transit fits, dilution from Gaia neighbors) are documented in SKILL.md as manual follow-ups — implement as you harden a candidate.
 

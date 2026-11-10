@@ -12,7 +12,8 @@ flowchart LR
   D --> E{Pass vetting?}
   E -->|yes| F[predict_transits]
   F --> G[make_ctoi_report]
-  G --> H[Manual ExoFOP upload]
+  G --> P[publish_candidate]
+  P --> H[Extra checks, paper, ExoFOP]
   E -->|no| Z[Archive / iterate]
 ```
 
@@ -130,9 +131,25 @@ python scripts/make_ctoi_report.py 370612437 \
   --notes "FFI-only search; vetting report attached."
 ```
 
-Follow `docs/SUBMITTING_TO_NASA.md` for the live web upload.
+This writes a parameter table only. It does not upload anything. Current ExoFOP policy requires a refereed paper (or an RNAAS that cites a published methods paper) and prior approval before a community candidate can be added — see `docs/SUBMITTING_TO_NASA.md`.
 
-## Step 8 — Sanity check on a known planet
+## Step 8 — Package the candidate in this repo
+
+**Script:** `scripts/publish_candidate.py`
+
+After vetting passes, copy the search, vetting, prediction, and CTOI outputs into `candidates/TIC<id>/`, write a summary README, and append a row to `candidates/INDEX.md`:
+
+```bash
+python scripts/publish_candidate.py 370612437
+# after review, commit and push the folder:
+python scripts/publish_candidate.py 370612437 --git-commit --git-push
+```
+
+The script exits without writing if `overall_pass` is false, unless you pass `--force`. Status starts as “Community candidate, unconfirmed.” Nothing in `candidates/` is a confirmed planet. Official names are not assigned here; see `docs/NAMING.md`.
+
+Then follow the checklist in `docs/SUBMITTING_TO_NASA.md`: extra blend / FPP / catalog checks, Zenodo preregistration, the paper, an ExoFOP account, the Published Candidate Upload Request, and the web upload.
+
+## Step 9 — Sanity check on a known planet
 
 Before trusting a new candidate, run the pipeline on a confirmed TOI (e.g. TOI-700 b, TIC 150428135):
 
@@ -159,3 +176,5 @@ Published period should recover within ~1%.
 | `results/vetting/<tic>_vet.md` | Human vetting report |
 | `results/predictions/<tic>_predictions.json` | Future transits |
 | `results/ctoi/<tic>_ctoi_fields.json` | ExoFOP-ready fields |
+| `candidates/TIC<tic>/` | Packaged public candidate (README, plots, JSON, CTOI text) |
+| `candidates/INDEX.md` | Table of packaged candidates and their status |
