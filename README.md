@@ -10,14 +10,18 @@ A reusable toolkit for searching **NASA TESS full-frame-image (FFI)** light curv
 git clone https://github.com/romit07/exoplanet-hunter.git && cd exoplanet-hunter
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-optional.txt   # optional: exovetter, TRICERATOPS
 
 # Download + search one star
 python3 scripts/fetch_lightcurves.py 370612437
-python3 scripts/search_transits.py 370612437
-python3 scripts/vet_candidate.py 370612437
+python3 scripts/search_transits.py 370612437 --method both   # BLS + TLS
+python3 scripts/centroid_check.py 370612437                  # pixel-level blend check
+python3 scripts/fpp_triceratops.py 370612437                 # false-positive probability (optional)
+python3 scripts/vet_candidate.py 370612437                   # all checks + ranking score
 
-# Automated sanity check (known TOI + candidate star)
-python3 tests/smoke_test.py
+# Automated sanity checks
+python3 tests/offline_test.py   # no network: synthetic BLS/TLS recovery + scoring
+python3 tests/smoke_test.py     # known TOI + candidate star (downloads data)
 ```
 
 Structured end-to-end steps live in **[SKILL.md](SKILL.md)**. NASA submission details: **[docs/SUBMITTING_TO_NASA.md](docs/SUBMITTING_TO_NASA.md)**. Naming (catalog IDs vs official IAU names): **[docs/NAMING.md](docs/NAMING.md)**. Packaged candidates: **[candidates/](candidates/)**. Walkthrough notebook: **[notebooks/exoplanet_search.ipynb](notebooks/exoplanet_search.ipynb)**.
@@ -28,16 +32,20 @@ Structured end-to-end steps live in **[SKILL.md](SKILL.md)**. NASA submission de
 |-----------|------|
 | `scripts/select_targets.py` | TIC query: nearby stars, FFI-friendly, exclude known TOI/planet hosts |
 | `scripts/fetch_lightcurves.py` | SPOC + QLP FFI download per sector |
-| `scripts/search_transits.py` | Detrend, BLS transit search, folded plot |
-| `scripts/vet_candidate.py` | Odd/even, secondary, holdout, injection, catalog checks → JSON + Markdown |
+| `scripts/search_transits.py` | Biweight detrend, BLS or TLS search (`--method bls\|tls\|both`), folded plot |
+| `scripts/vet_candidate.py` | Odd/even, secondary, holdout, injection, catalog, exovetter ModShift/SWEET, centroid and FPP results, ranking score → JSON + Markdown |
+| `scripts/centroid_check.py` | Difference-image centroid offset from TESScut pixels + TIC neighbours that could mimic the dip |
+| `scripts/fpp_triceratops.py` | TRICERATOPS false-positive probability (optional dependency) |
 | `scripts/predict_transits.py` | Future midtransit table for Zenodo preregistration |
 | `scripts/make_ctoi_report.py` | ExoFOP parameter summary |
 | `scripts/publish_candidate.py` | Package a vetted hit into `candidates/TIC<id>/` and update the index |
 | `candidates/` | Public candidate folders plus [INDEX.md](candidates/INDEX.md) |
-| `exoplanet_hunter/lc_utils.py` | Shared light-curve I/O, cleaning, BLS |
+| `exoplanet_hunter/lc_utils.py` | Shared light-curve I/O, cleaning, BLS, TLS |
+| `exoplanet_hunter/scoring.py` | Transparent weighted candidate ranking score |
 | `tests/smoke_test.py` | Period recovery on TOI-700 b and TIC 370612437 |
+| `tests/offline_test.py` | Network-free BLS/TLS injection recovery and scoring check |
 
-Optional: `search_transits.py --tls` uses [Transit Least Squares](https://github.com/hippke/transitleastsquares) when installed.
+[docs/RELATED_PROJECTS.md](docs/RELATED_PROJECTS.md) compares this toolkit with other open-source transit search and vetting projects and credits the libraries it builds on (Transit Least Squares, wotan, TRICERATOPS, exovetter, lightkurve).
 
 ## Method (summary)
 
@@ -45,11 +53,11 @@ The pipeline mirrors community practice for **FFI-only** nearby stars:
 
 1. Target stars observed at 30-min / 10-min / 200-s cadence but **not** at TESS 2-minute precision, and not already on the TOI or confirmed-planet lists.
 2. Download independent reductions (**TESS-SPOC** and **QLP** where available).
-3. Biweight detrend per sector, bin to 10 minutes, **Box Least Squares** search (0.5–25 d) with harmonic alias checks.
-4. Vetting: catalog crossmatch, odd/even and secondary eclipse tests, SPOC/QLP agreement, inverted light-curve control, leave-one-sector holdout, simple injection–recovery, transit-duration sanity check.
+3. Biweight detrend per sector ([wotan](https://github.com/hippke/wotan)), bin to 10 minutes, **Box Least Squares** search (0.5–25 d) with harmonic alias checks; optionally **[Transit Least Squares](https://github.com/hippke/tls)** for higher sensitivity to small planets, with a BLS/TLS period cross-check.
+4. Vetting: catalog crossmatch, odd/even and secondary eclipse tests, SPOC/QLP agreement, inverted light-curve control, leave-one-sector holdout, simple injection–recovery, transit-duration sanity check, exovetter ModShift/SWEET, **difference-image centroid** (blend) check, and **TRICERATOPS** false-positive probability. A transparent weighted score ranks survivors for manual review.
 5. Preregister ephemeris on Zenodo before upcoming sectors; package a passing candidate with `publish_candidate.py`; after a refereed write-up, upload parameters and plots to ExoFOP as a community candidate / CTOI (see [docs/SUBMITTING_TO_NASA.md](docs/SUBMITTING_TO_NASA.md) for the current publication-first policy).
 
-Advanced steps (pixel centroids, TRICERATOPS, full MCMC transit fits, dilution from Gaia neighbors) are documented in SKILL.md as manual follow-ups — implement as you harden a candidate.
+Still manual (see SKILL.md): full MCMC transit fits, high-resolution imaging contrast curves for TRICERATOPS, and ground-based follow-up.
 
 ## Inspiration
 

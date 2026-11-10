@@ -1,0 +1,3 @@
+# Optional vetting extras. Every script skips these gracefully when missing.
+exovetter>=0.0.16   # ModShift / SWEET vetters (vet_candidate.py), centroid cross-check (centroid_check.py --exovetter)
+triceratops>=1.1.0  # false-positive probability (fpp_triceratops.py); building a dependency needs a C++ compiler

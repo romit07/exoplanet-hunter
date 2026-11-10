@@ -1,6 +1,6 @@
 # Skill: End-to-end TESS FFI exoplanet search
 
-Use this procedure with the scripts in `scripts/` to go from target selection through vetting, prediction preregistration, and ExoFOP CTOI preparation. Assumes a Python 3.10+ environment with `pip install -r requirements.txt`.
+Use this procedure with the scripts in `scripts/` to go from target selection through vetting, prediction preregistration, and ExoFOP CTOI preparation. Assumes a Python 3.10+ environment with `pip install -r requirements.txt` (plus `requirements-optional.txt` for exovetter and TRICERATOPS). Everything runs on CPU.
 
 ## Overview
 
@@ -8,7 +8,8 @@ Use this procedure with the scripts in `scripts/` to go from target selection th
 flowchart LR
   A[select_targets] --> B[fetch_lightcurves]
   B --> C[search_transits]
-  C --> D[vet_candidate]
+  C --> C2[centroid_check + fpp_triceratops]
+  C2 --> D[vet_candidate]
   D --> E{Pass vetting?}
   E -->|yes| F[predict_transits]
   F --> G[make_ctoi_report]
@@ -22,6 +23,7 @@ flowchart LR
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-optional.txt   # optional extras
 ```
 
 MAST downloads cache under `data/mast_cache/` by default.
@@ -62,13 +64,18 @@ Repeat for each `tic` in your target list (batch with a shell loop).
 
 **Script:** `scripts/search_transits.py`
 
-Biweight detrend (per sector), 10-minute binning, Box Least Squares (BLS). Optional Transit Least Squares: `--tls`.
+Biweight detrend (per sector, wotan), 10-minute binning, then Box Least Squares (BLS, default, fast) or Transit Least Squares (TLS, limb-darkened template, better for small planets). `--method both` runs both and records a BLS/TLS period cross-check. TLS takes about a minute per star with 8 CPU threads on a multi-year FFI light curve; use BLS for large scans and TLS on the shortlist.
 
 ```bash
 python scripts/search_transits.py 370612437 --rho 1.0
 # → results/search/370612437_bls.json
 # → results/search/370612437_folded.png
+
+python scripts/search_transits.py 370612437 --method tls
+# → results/search/370612437_tls.json (+ _tls_folded.png)
 ```
+
+Later steps read the newest of `<tic>_tls.json` / `<tic>_bls.json` unless `--search-json` is given.
 
 Record `period_d`, `epoch_btjd`, `depth_ppm`, `duration_d`, `snr`. Ignore SNR < 6 unless inspecting manually.
 
@@ -88,6 +95,20 @@ Runs automated checks inspired by community FFI vetting practice:
 | holdout_year | hide last sector, blind search + phase verify |
 | injection_recovery | synthetic transit recoverability |
 | t14_consistency | duration vs stellar density scaling |
+| exovetter | ModShift (Robovetter MS2-style) + SWEET; advisory, feeds the score only |
+| centroid | difference-image centroid offset (from `centroid_check.py`) |
+| fpp | TRICERATOPS FPP / NFPP (from `fpp_triceratops.py`) |
+
+Pixel-level blend check and false-positive probability (run first, or pass `--run-centroid --run-fpp` to `vet_candidate.py`):
+
+```bash
+python scripts/centroid_check.py 370612437 --max-sectors 4
+# → results/centroid/370612437_centroid.json, _diff_image.png
+python scripts/fpp_triceratops.py 370612437 --repeats 5
+# → results/fpp/370612437_fpp.json  (writes "skipped" if triceratops/MAST unavailable)
+```
+
+The centroid check fails if the difference-image centroid is offset by more than 1 pixel (21") at more than 3 sigma. It also lists TIC stars bright enough to produce the depth if fully eclipsed. TRICERATOPS guidance (Giacalone et al. 2021): FPP < 0.015 and NFPP < 0.001 → statistically validated level; FPP < 0.5 → likely planet; the check fails otherwise.
 
 ```bash
 python scripts/vet_candidate.py 370612437 --rho 1.0
@@ -97,11 +118,12 @@ python scripts/vet_candidate.py 370612437 --rho 1.0
 
 Exit code 1 means at least one hard check failed or the star is already a TOI. **Most dips fail here** — that is expected.
 
+The report includes a **ranking score** (0–1, `exoplanet_hunter/scoring.py`): a hand-weighted logistic combination of SNR, odd/even, secondary, duration, inverted-LC, holdout, injection, cross-reduction, centroid, FPP and ModShift results. Use it to order candidates for manual review; it is not a probability that the signal is a planet.
+
 Manual follow-ups not in the scripts (recommended by community review):
 
-- Centroid / difference imaging on TESS pixels (nearby eclipsing binary)
-- TRICERATOPS or similar statistical FPP
-- Gaia neighbor clearing, dilution from companions
+- Inspect the difference image and neighbour list by eye; check Gaia for unresolved companions
+- Add high-resolution imaging contrast curves to TRICERATOPS (`contrast_curve_file`) when available
 - Compare predicted vs measured transit duration (T14) after a full transit fit
 
 ## Step 5 — Decide
@@ -172,8 +194,10 @@ Published period should recover within ~1%.
 |------|---------|
 | `data/targets.csv` | Target list |
 | `data/lightcurves/<tic>.npz` | Combined FFI arrays |
-| `results/search/<tic>_bls.json` | Search ephemeris |
-| `results/vetting/<tic>_vet.md` | Human vetting report |
+| `results/search/<tic>_bls.json` / `_tls.json` | Search ephemeris (BLS / TLS) |
+| `results/centroid/<tic>_centroid.json` | Difference-image centroid offset, neighbours |
+| `results/fpp/<tic>_fpp.json` | TRICERATOPS FPP / NFPP |
+| `results/vetting/<tic>_vet.md` | Human vetting report + ranking score |
 | `results/predictions/<tic>_predictions.json` | Future transits |
 | `results/ctoi/<tic>_ctoi_fields.json` | ExoFOP-ready fields |
 | `candidates/TIC<tic>/` | Packaged public candidate (README, plots, JSON, CTOI text) |
