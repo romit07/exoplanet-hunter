@@ -1,4 +1,4 @@
-"""Light-curve loading, cleaning, binning, and BLS transit search."""
+"""Light-curve loading, cleaning, binning, and BLS / TLS transit search."""
 
 from __future__ import annotations
 
@@ -289,7 +289,12 @@ def bls_search(
     period = float(pg_f.period[best_idx])
     t0 = float(pg_f.transit_time[best_idx])
     dur = float(pg_f.duration[best_idx])
-    depth = 1.0 - float(np.nanmin(lc["flux"][np.abs((lc["time"] - t0) % period - period / 2) < dur / 2]))
+    # Box depth from the BLS fit (mean in-transit deficit); the old min-flux estimate
+    # was biased high by single noisy points.
+    depth = float(pg_f.depth[best_idx])
+    if not np.isfinite(depth) or depth <= 0:
+        ph = ((lc["time"] - t0 + 0.5 * period) % period) - 0.5 * period
+        depth = 1.0 - float(np.nanmedian(lc["flux"][np.abs(ph) < dur / 2]))
     sde = float(pg_f.power[best_idx])
     snr = float(pg_f.snr[best_idx]) if hasattr(pg_f, "snr") and pg_f.snr is not None else sde
     return {
@@ -302,6 +307,7 @@ def bls_search(
         "sde": sde,
         "min_transits": int(baseline / period),
         "signals_requested": max_signals,
+        "method": "bls",
     }
 
 
@@ -321,3 +327,75 @@ def split_by_author(lc: dict[str, np.ndarray]) -> dict[str, dict[str, np.ndarray
             continue
         out[name] = {k: lc[k][m] for k in lc if isinstance(lc[k], np.ndarray) and lc[k].shape == m.shape}
     return out
+
+
+def tls_search(
+    lc: dict[str, np.ndarray],
+    rho_sun: float = 1.0,
+    period_min: float | None = None,
+    period_max: float | None = None,
+    max_points: int = 15_000,
+    threads: int | None = None,
+    oversampling_factor: int = 3,
+    duration_grid_step: float = 1.1,
+) -> dict[str, Any]:
+    """Transit Least Squares search (Hippke & Heller 2019) on a cleaned light curve.
+
+    Uses a limb-darkened transit template instead of a box, which gives a higher
+    detection efficiency for small planets than BLS. Returns the same keys as
+    :func:`bls_search` plus TLS-specific diagnostics. Requires
+    ``pip install transitleastsquares``.
+    """
+    try:
+        from transitleastsquares import transitleastsquares
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("TLS search needs: pip install transitleastsquares") from exc
+    import os
+
+    lc_s = _decimate_lc(lc, max_points=max_points)
+    t, f, e = lc_s["time"], lc_s["flux"], lc_s["flux_err"]
+    baseline = float(t.max() - t.min())
+    pmin = period_min if period_min is not None else PERIOD_MIN_D
+    pmax = period_max if period_max is not None else min(PERIOD_MAX_D, baseline / MIN_TRANSITS)
+    # Density enters via M_star with R_star = 1 R_sun (rho = M / R^3)
+    model = transitleastsquares(t, f, e)
+    res = model.power(
+        period_min=pmin,
+        period_max=pmax,
+        M_star=float(np.clip(rho_sun, 0.1, 2.0)),
+        R_star=1.0,
+        M_star_min=0.1,
+        M_star_max=2.0,
+        R_star_min=0.13,
+        R_star_max=3.5,
+        oversampling_factor=oversampling_factor,
+        duration_grid_step=duration_grid_step,
+        use_threads=threads or os.cpu_count() or 1,
+        show_progress_bar=False,
+    )
+    depth_frac = float(1.0 - res.depth) if np.isfinite(res.depth) else float("nan")
+    return {
+        "method": "tls",
+        "period_d": float(res.period),
+        "period_uncertainty_d": float(res.period_uncertainty),
+        "epoch_btjd": float(res.T0),
+        "duration_d": float(res.duration),
+        "depth_frac": depth_frac,
+        "depth_ppm": depth_frac * 1e6,
+        "snr": float(res.snr),
+        "sde": float(res.SDE),
+        "fap": float(res.FAP) if res.FAP is not None else None,
+        "rp_rs": float(res.rp_rs),
+        "transit_count": int(res.transit_count),
+        "distinct_transit_count": int(res.distinct_transit_count),
+        "odd_even_mismatch_sigma": float(res.odd_even_mismatch),
+        "min_transits": int(baseline / float(res.period)),
+    }
+
+
+def default_search_json(tic: int, search_dir: Path = Path("results/search")) -> Path:
+    """Newest search result for a TIC (``<tic>_tls.json`` or ``<tic>_bls.json``)."""
+    found = [p for p in (search_dir / f"{tic}_tls.json", search_dir / f"{tic}_bls.json") if p.exists()]
+    if not found:
+        return search_dir / f"{tic}_bls.json"
+    return max(found, key=lambda p: p.stat().st_mtime)

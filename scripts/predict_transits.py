@@ -12,6 +12,11 @@ from pathlib import Path
 import numpy as np
 from astropy.time import Time
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from exoplanet_hunter import lc_utils  # noqa: E402
+
 BJD_OFFSET = 2457000.0  # BTJD = BJD - 2457000
 
 
@@ -60,7 +65,7 @@ def main() -> int:
     p.add_argument("-o", type=Path, default=Path("results/predictions"))
     args = p.parse_args()
 
-    search_path = args.search_json or Path(f"results/search/{args.tic}_bls.json")
+    search_path = args.search_json or lc_utils.default_search_json(args.tic)
     search = json.loads(search_path.read_text())
     period = search["period_d"]
     epoch = search["epoch_btjd"]
