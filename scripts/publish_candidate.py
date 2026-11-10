@@ -379,7 +379,7 @@ def write_candidate_readme(
             "",
             "- **Not a confirmed planet.** Passing automated vetting is necessary but not sufficient.",
             "- TESS FFI photometry is shallow; Earth-size signals around Sun-like stars sit near the noise floor.",
-            "- Automated checks do not include a TRICERATOPS false-positive probability, a pixel-level or centroid blend test, or a Gaia nearby-star dilution analysis. Run those before treating the signal as submission-ready (see [docs/SUBMITTING_TO_NASA.md](../../docs/SUBMITTING_TO_NASA.md)).",
+            "- The difference-image centroid test (`scripts/centroid_check.py`) and TRICERATOPS false-positive probability (`scripts/fpp_triceratops.py`) appear in the vetting report only if they were run; if either is marked skip, run it before treating the signal as submission-ready. A Gaia nearby-star dilution analysis is not automated (see [docs/SUBMITTING_TO_NASA.md](../../docs/SUBMITTING_TO_NASA.md)).",
             "- Estimated radius, when given, is `sqrt(depth) × R⋆` in Earth units and ignores limb darkening, impact parameter, and dilution.",
         ]
     )
@@ -451,7 +451,7 @@ def git_publish(repo: Path, paths: list[Path], tic: int, do_push: bool) -> None:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("tic", type=int, help="TESS Input Catalog ID")
-    p.add_argument("--search-json", type=Path, default=None, help="Default: results/search/<tic>_bls.json")
+    p.add_argument("--search-json", type=Path, default=None, help="Default: newest of results/search/<tic>_tls.json / <tic>_bls.json")
     p.add_argument("--vet-json", type=Path, default=None, help="Default: results/vetting/<tic>_vet.json")
     p.add_argument("--vet-md", type=Path, default=None, help="Default: results/vetting/<tic>_vet.md")
     p.add_argument("--predictions-json", type=Path, default=None, help="Default: results/predictions/<tic>_predictions.json")
@@ -477,7 +477,11 @@ def main() -> int:
         print("--git-push requires --git-commit", file=sys.stderr)
         return 2
 
-    search_path = args.search_json or Path(f"results/search/{args.tic}_bls.json")
+    if args.search_json:
+        search_path = args.search_json
+    else:
+        found = [q for q in (Path(f"results/search/{args.tic}_tls.json"), Path(f"results/search/{args.tic}_bls.json")) if q.exists()]
+        search_path = max(found, key=lambda q: q.stat().st_mtime) if found else Path(f"results/search/{args.tic}_bls.json")
     vet_path = args.vet_json or Path(f"results/vetting/{args.tic}_vet.json")
     vet_md_path = args.vet_md or Path(f"results/vetting/{args.tic}_vet.md")
     pred_path = args.predictions_json or Path(f"results/predictions/{args.tic}_predictions.json")
