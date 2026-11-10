@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+data/mast_cache/
+data/lightcurves/
+results/
+agent-tools/
+*.fits
+.DS_Store
